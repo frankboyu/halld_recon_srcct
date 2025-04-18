@@ -130,6 +130,12 @@ void DSourceComboer::Define_DefaultCuts(void)
 {
 //COMPARE:
 	//DEFINE DEFAULT dE/dx CUTS
+	//CDC Deuteron
+	ddEdxCuts_TF1FunctionStrings[Deuteron][SYS_CDC].first = "exp(-1.0*[0]*x + [1]) + [2]"; //low bound
+	ddEdxCuts_TF1Params[Deuteron][SYS_CDC].first = {5.5, 5.0, 2.5};
+	ddEdxCuts_TF1FunctionStrings[Deuteron][SYS_CDC].second = "[0]"; //high bound
+	ddEdxCuts_TF1Params[Deuteron][SYS_CDC].second = {9.9E9};
+
 	//CDC Proton
 	ddEdxCuts_TF1FunctionStrings[Proton][SYS_CDC].first = "exp(-1.0*[0]*x + [1]) + [2]"; //low bound
 	ddEdxCuts_TF1Params[Proton][SYS_CDC].first = {4.0, 2.25, 1.0};
