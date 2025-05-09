@@ -60,7 +60,7 @@ void DFCALCluster::saveHits( const userhits_t* const hits )
 {
    
    for ( int i=0; i < fNhits; i++) {
-      JObject::oid_t id = getHitID( hits, i ) ;
+      oid_t id = getHitID( hits, i ) ;
       if ( id != 0 ) {  
 	addHit(id,getHitCh( hits, i ),getHitE( hits, i ),getHitX( hits, i ),
 	       getHitY( hits, i ),getHitT( hits, i ));
@@ -274,10 +274,6 @@ void DFCALCluster::shower_profile( const userhits_t* const hitList,
    double y = hitList->hit[ihit].y;
    double moliere_radius=MOLIERE_RADIUS;
    double min_dist=fcalgeom->blockSize();
-   if (hitList->hit[ihit].ch>=fcalgeom->numFcalChannels()){
-     moliere_radius=PbWO4_MOLIERE_RADIUS;
-     min_dist=fcalgeom->insertBlockSize();
-   }
    double dist = sqrt(SQR(x - fCentroid.x()) + SQR(y - fCentroid.y()));
    if (dist > MAX_SHOWER_RADIUS)
       return;

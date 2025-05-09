@@ -2,6 +2,7 @@
 #define _JEventProcessor_highlevel_online_
 
 #include <JANA/JEventProcessor.h>
+#include <JANA/Services/JLockService.h>
 
 #include <TDirectory.h>
 #include <TH2.h>
@@ -29,15 +30,15 @@
 #include <PAIR_SPECTROMETER/DPSPair.h>
 #include <PAIR_SPECTROMETER/DPSCPair.h>
 
-using namespace jana;
 using namespace std;
 
-class JEventProcessor_highlevel_online:public jana::JEventProcessor
+class JEventProcessor_highlevel_online:public JEventProcessor
 {
 	public:
-		JEventProcessor_highlevel_online(){};
+		JEventProcessor_highlevel_online(){
+			SetTypeName("JEventProcessor_highlevel_online");
+		};
 		~JEventProcessor_highlevel_online(){};
-		const char* className(void){return "JEventProcessor_highlevel_online";}
 
 		TH1D* dHist_EventInfo;
 
@@ -67,21 +68,28 @@ class JEventProcessor_highlevel_online:public jana::JEventProcessor
 		TH1I *dKp_Km;
 		TH1I *dpip_pim_pi0;
 		TH2I *dbeta_vs_p;
+		TH2I *dbeta_vs_p_BCAL;
+		TH2I *dbeta_vs_p_TOF;
 		TH1I *dptrans;
 		TH1I *dme_rho;
 		TH1I *dme_omega;
-		
-		TH2D *dF1TDC_fADC_tdiff;
+
+                TH2I *dHist_heli_asym_gtp;
+
+                TH2D *dF1TDC_fADC_tdiff;
 		map<pair<int,int>, double> f1tdc_bin_map; // key=<rocid,slot> val=bin
 		
 		template<typename T> void FillF1Hist(vector<const T*> hits);
 
 	private:
-		jerror_t init(void);
-		jerror_t brun(jana::JEventLoop *locEventLoop, int32_t runnumber);
-		jerror_t evnt(jana::JEventLoop *locEventLoop, uint64_t eventnumber);
-		jerror_t erun(void);
-		jerror_t fini(void);
+
+		void Init() override;
+		void BeginRun(const std::shared_ptr<const JEvent>& event) override;
+		void Process(const std::shared_ptr<const JEvent>& locEvent) override;
+		void EndRun() override;
+		void Finish() override;
+
+		std::shared_ptr<JLockService> lockService;
 
 		int fcal_cell_thr;
 		int bcal_cell_thr;

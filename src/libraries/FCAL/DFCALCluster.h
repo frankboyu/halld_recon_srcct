@@ -13,8 +13,7 @@
 using namespace std;
 
 #include <JANA/JObject.h>
-#include <JANA/JFactory.h>
-using namespace jana;
+#include <DANA/DObjectID.h>
 
 #include <FCAL/DFCALGeometry.h>
 
@@ -29,13 +28,6 @@ public:
   
   DFCALCluster( const int nhits );
   ~DFCALCluster();
-  
-  enum cluster_status_t{
-    SHOWER_FOUND,  // Normal clusterization result
-    EXTRA_PEAK, // extra peak found in set of hits
-    SPLIT_CLUSTER, // Additional shower candidate added 
-    AT_BOUNDARY,  // Cluster at boundary of lead glass and insert
-  };
   
   typedef struct {
     oid_t id;
@@ -105,13 +97,13 @@ public:
   inline const vector<DFCALClusterHit_t> GetHits() const { return fHitList; }
   inline uint32_t GetNHits(void) const { return fHitList.size(); }
   
-  void toStrings(vector<pair<string,string> > &items) const {
-      AddString(items, "x(cm)", "%3.1f", getCentroid().x());
-      AddString(items, "y(cm)", "%3.1f", getCentroid().y());
-      AddString(items, "z(cm)", "%3.1f", getCentroid().z());
-      AddString(items, "E(GeV)", "%2.3f", getEnergy());
-      AddString(items, "t(ns)", "%2.3f", getTime());
-      AddString(items, "status", "%d", getStatus());
+  void Summarize(JObjectSummary& summary) const override {
+      summary.add(getCentroid().x(), "x(cm)", "%3.1f");
+      summary.add(getCentroid().y(), "y(cm)", "%3.1f");
+      summary.add(getCentroid().z(), "z(cm)", "%3.1f");
+      summary.add(getEnergy(), "E(GeV)", "%2.3f");
+      summary.add(getTime(), "t(ns)", "%2.3f");
+      summary.add(getStatus(), "status", "%d");
   }
   
 private:
@@ -244,7 +236,7 @@ inline int DFCALCluster::getHits() const
    return fNhits;
 }
 
-inline JObject::oid_t DFCALCluster::getHitID(const userhits_t* const hitList, const int ihit ) const
+inline oid_t DFCALCluster::getHitID(const userhits_t* const hitList, const int ihit ) const
 {
    if ( ihit >= 0  && ihit < fNhits && hitList && ihit < hitList->nhits ) {
      return hitList->hit[ fHit[ ihit ] ].id;

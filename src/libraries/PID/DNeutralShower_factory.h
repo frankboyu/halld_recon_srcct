@@ -11,13 +11,17 @@
 #include <iostream>
 #include <iomanip>
 
-#include <JANA/JFactory.h>
+#include <JANA/JFactoryT.h>
 #include <PID/DNeutralShower.h>
 #include <PID/DChargedTrack.h>
 #include <PID/DChargedTrackHypothesis.h>
 #include <TOF/DTOFPoint.h>
 #include <START_COUNTER/DSCHit.h>
 #include <FCAL/DFCALShower.h>
+#include <FCAL/DFCALHit.h>
+#include <ECAL/DECALShower.h>
+#include <ECAL/DECALCluster.h>
+#include <ECAL/DECALHit.h>
 #include <BCAL/DBCALShower.h>
 #include <CCAL/DCCALShower.h>
 #include "DResourcePool.h"
@@ -26,20 +30,20 @@
 #include "DNeutralShower_FCALQualityMLP.h"
 
 using namespace std;
-using namespace jana;
 
-class DNeutralShower_factory:public jana::JFactory<DNeutralShower>
+
+class DNeutralShower_factory:public JFactoryT<DNeutralShower>
 {
  public:
   DNeutralShower_factory();
   ~DNeutralShower_factory(){ delete dFCALClassifier;}
 
  private:
-  jerror_t init(void);						///< Called once at program start.
-  jerror_t brun(jana::JEventLoop *locEventLoop, int32_t runnumber);	///< Called everytime a new run number is detected.
-  jerror_t evnt(jana::JEventLoop *locEventLoop, uint64_t eventnumber);	///< Called every event.
-  jerror_t erun(void);						///< Called everytime run number changes, provided brun has been called.
-  jerror_t fini(void);						///< Called after last event of last event source has been processed.
+  void Init() override;
+  void BeginRun(const std::shared_ptr<const JEvent>& event) override;
+  void Process(const std::shared_ptr<const JEvent>& event) override;
+  void EndRun() override;
+  void Finish() override;
 
   shared_ptr<DResourcePool<TMatrixFSym>> dResourcePool_TMatrixFSym;
   DVector3 dTargetCenter;

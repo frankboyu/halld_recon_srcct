@@ -14,53 +14,57 @@ using namespace std;
 #include <DAQ/DCODAEventInfo.h>
 #include <DAQ/DCODAROCInfo.h>
 #include <DAQ/DHELIDigiHit.h>
+#include <DAQ/DHelicityData.h>
 #include <DAQ/DEPICSvalue.h>
 #include "DBeamHelicity_factory.h"
-using namespace jana;
 
 //init static class variable
 int DBeamHelicity_factory::dIHWP   = 0;
 int DBeamHelicity_factory::dBeamOn = 1;
 
 //------------------
-// init
+// Init
 //------------------
-jerror_t DBeamHelicity_factory::init(void)
+void DBeamHelicity_factory::Init()
 {
+	PREFER_PROMPT_HELICITY_DATA = true;
+	
+	auto app = GetApplication();
+	app->SetDefaultParameter("PREFER_PROMPT_HELICITY_DATA", PREFER_PROMPT_HELICITY_DATA, "If both prompt and delayed helicity data are in the data stream, prefer the prompt. (default: true)");
 
-	return NOERROR;
+	return; //NOERROR;
 }
 
 //------------------
-// brun
+// BeginRun
 //------------------
-jerror_t DBeamHelicity_factory::brun(jana::JEventLoop *loop, int32_t runnumber)
+void DBeamHelicity_factory::BeginRun(const std::shared_ptr<const JEvent>& event)
 {
 
 	// Grab information from CCDB tables here
 
 	// Constants for determined helicity pattern (from Ken) 
 
-	// Half Waveplate status at run start (could be from RCDB?)
-
-	return NOERROR;
+	return; //NOERROR;
 }
 
 //------------------
-// evnt
+// Process
 //------------------
-jerror_t DBeamHelicity_factory::evnt(JEventLoop *loop, uint64_t eventnumber){
+void DBeamHelicity_factory::Process(const std::shared_ptr<const JEvent>& event){
+  auto eventnumber = event->GetEventNumber();
   double beamcurr     = 0.0;
   double beamthresh   = 10.0;
   
   // get info from EPICS variables
   vector<const DEPICSvalue*> epicsvalues;
-  loop->Get(epicsvalues);
-  bool isEPICS = loop->GetJEvent().GetStatusBit(kSTATUS_EPICS_EVENT);
-
+  event->Get(epicsvalues);
+  bool isEPICS = event->GetSingle<DStatusBits>()->GetStatusBit(kSTATUS_EPICS_EVENT);
   //kl I don't thing this works. Each thread has a separate instance of the factory, so these values only get set in the thread which
   //processed the EPICS event. Locking doesn't help. Worry about this lated when everything is moved into a factory.
-  if(isEPICS) {
+  //sdobbs - note that for the "beam on" tests, in principle we could use the DBeamCurrent objects, however
+  // that information isn't filled until after 
+    if(isEPICS) {
     for(vector<const DEPICSvalue*>::const_iterator val_itr = epicsvalues.begin(); val_itr != epicsvalues.end(); val_itr++) {
       const DEPICSvalue* epics_val = *val_itr;
       if(epics_val->name == "IGL1I00DI24_24M"){
@@ -73,51 +77,97 @@ jerror_t DBeamHelicity_factory::evnt(JEventLoop *loop, uint64_t eventnumber){
 	std::cout << "Got IBCAD00CRCUR6 = " << beamcurr << ". Setting dBeamOn = " <<  dBeamOn << "Event = "<< eventnumber << endl;
       }
     }
-    return NOERROR;
+    return; //NOERROR;
   }
   
-  // get helicity bits from fADC
+  DBeamHelicity *locBeamHelicity = nullptr;
+  
+  // get helicity bits from fADC for delayed helicity signal
   vector<const DHELIDigiHit*> locHELIDigiHits;
-  loop->Get(locHELIDigiHits);
-  if(locHELIDigiHits.empty()) return NOERROR;
-  
-  DBeamHelicity *locBeamHelicity = new DBeamHelicity;
-  locBeamHelicity->pattern_sync  = 0;
-  locBeamHelicity->t_settle      = 0;
-  locBeamHelicity->helicity      = 0;
-  locBeamHelicity->pair_sync     = 0;
-  locBeamHelicity->ihwp          = dIHWP;
-  locBeamHelicity->beam_on       = dBeamOn;
-  
-  for(size_t loc_i=0; loc_i<locHELIDigiHits.size(); loc_i++) {
-    
-    const DHELIDigiHit *locHELIDigiHit = locHELIDigiHits[loc_i];
-    
-    if(locHELIDigiHit->pulse_integral < 1000) continue; // threshold for signal
-    
-    if(locHELIDigiHit->chan == 0) locBeamHelicity->pattern_sync = 1;
-    if(locHELIDigiHit->chan == 1) locBeamHelicity->t_settle = 1;
-    if(locHELIDigiHit->chan == 2) locBeamHelicity->helicity = 1;
-    if(locHELIDigiHit->chan == 3) locBeamHelicity->pair_sync = 1;
+  event->Get(locHELIDigiHits);
+
+  // or get helicity bits from new decoder board
+  vector<const DHelicityData*> locHelicityDatas;
+  event->Get(locHelicityDatas);
+
+  if(locHELIDigiHits.empty() && locHelicityDatas.empty())
+    return;
+
+
+  // make the object depending on which data type we have
+  if(!locHelicityDatas.empty() && PREFER_PROMPT_HELICITY_DATA) {
+  	locBeamHelicity = Make_DBeamHelicity(locHelicityDatas[0]);
+  } else {
+    if(!locHELIDigiHits.empty())
+  	  locBeamHelicity = Make_DBeamHelicity(locHELIDigiHits);
   }
   
-  _data.push_back(locBeamHelicity);
+
+  if(locBeamHelicity == nullptr)  return;
   
-  return NOERROR;
+  Insert(locBeamHelicity);
+  
+  return; //NOERROR;
 }
 
 //------------------
-// erun
+// Make_DBeamHelicity
 //------------------
-jerror_t DBeamHelicity_factory::erun(void)
+DBeamHelicity *DBeamHelicity_factory::Make_DBeamHelicity(vector<const DHELIDigiHit*> &locHELIDigiHits)
 {
-	return NOERROR;
+	DBeamHelicity *locBeamHelicity = new DBeamHelicity;
+	locBeamHelicity->pattern_sync  = 0;
+	locBeamHelicity->t_settle      = 0;
+	locBeamHelicity->helicity      = 0;
+	locBeamHelicity->pair_sync     = 0;
+	locBeamHelicity->ihwp          = dIHWP;
+	locBeamHelicity->beam_on       = dBeamOn;
+	locBeamHelicity->valid         = true;  //?
+	
+	for(size_t loc_i=0; loc_i<locHELIDigiHits.size(); loc_i++) {
+		const DHELIDigiHit *locHELIDigiHit = locHELIDigiHits[loc_i];
+		
+		if(locHELIDigiHit->pulse_integral < 1000) continue; // threshold for signal
+		
+		if(locHELIDigiHit->chan == 0) locBeamHelicity->pattern_sync = 1;
+		if(locHELIDigiHit->chan == 1) locBeamHelicity->t_settle = 1;
+		if(locHELIDigiHit->chan == 2) locBeamHelicity->helicity = 1;
+		if(locHELIDigiHit->chan == 3) locBeamHelicity->pair_sync = 1;
+	}
+
+	return locBeamHelicity;
 }
 
 //------------------
-// fini
+// Make_DBeamHelicity
 //------------------
-jerror_t DBeamHelicity_factory::fini(void)
+DBeamHelicity *DBeamHelicity_factory::Make_DBeamHelicity(const DHelicityData *locHelicityData)
 {
-	return NOERROR;
+	DBeamHelicity *locBeamHelicity = new DBeamHelicity;
+	locBeamHelicity->pattern_sync  = locHelicityData->trigger_pattern_sync;
+	locBeamHelicity->t_settle      = locHelicityData->trigger_tstable;
+	locBeamHelicity->helicity      = locHelicityData->trigger_helicity_state;
+	locBeamHelicity->pair_sync     = locHelicityData->trigger_pair_sync;
+	locBeamHelicity->ihwp          = dIHWP;
+	locBeamHelicity->beam_on       = dBeamOn;
+	locBeamHelicity->valid         = true;  //?
+	
+	return locBeamHelicity;
+}
+
+
+//------------------
+// EndRun
+//------------------
+void DBeamHelicity_factory::EndRun()
+{
+	return; //NOERROR;
+}
+
+//------------------
+// Finish
+//------------------
+void DBeamHelicity_factory::Finish()
+{
+	return; //NOERROR;
 }

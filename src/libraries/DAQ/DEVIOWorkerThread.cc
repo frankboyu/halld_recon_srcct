@@ -11,13 +11,11 @@
 #include "JEventSource_EVIOpp.h"
 #include "LinkAssociations.h"
 
-#include <swap_bank.h>
+#include "swap_bank.h"
 #include <DANA/JExceptionDataFormat.h>
 
 using namespace std;
 using namespace std::chrono;
-
-
 
 //---------------------------------
 // DEVIOWorkerThread    (Constructor)
@@ -47,7 +45,14 @@ DEVIOWorkerThread::DEVIOWorkerThread(
 	// for someone to notify it. That won't happen before this
 	// constructor completes so we do the remaining initializations
 	// below.
-	
+
+
+  PrintLimitFDC = 0;
+  PrintLimitCDC = 0;
+  PrintLimitTRD = 0;
+  
+
+  
 	VERBOSE             = 0;
 	Nrecycled           = 0;     // Incremented in JEventSource_EVIOpp::Dispatcher()
 	MAX_EVENT_RECYCLES  = 1000;  // In EVIO events (not L1 trigger events!) overwritten in JEventSource_EVIOpp constructor
@@ -71,7 +76,9 @@ DEVIOWorkerThread::DEVIOWorkerThread(
 	PARSE_EVENTTAG      = true;
 	PARSE_TRIGGER       = true;
 	PARSE_SSP           = true;
+	SKIP_SSP_FORMAT_ERROR = false;
 	PARSE_GEMSRS        = true;
+	PARSE_HELICITY      = true;
         NSAMPLES_GEMSRS     = 9;
 	
 	LINK_TRIGGERTIME    = true;
@@ -121,7 +128,7 @@ void DEVIOWorkerThread::Run(void)
 			current_parsed_events.clear(); // (these are also in parsed_event_pool so were already deleted)
 			jerr << "Data format error exception caught" << endl;
 			jerr << "Stack trace follows:" << endl;
-			jerr << e.getStackTrace() << endl;
+			jerr << e.GetStackTrace() << endl;
 			jerr << e.what() << endl;
 			japp->Quit(10);
 		} catch (exception &e) {
@@ -776,7 +783,7 @@ void DEVIOWorkerThread::ParseCDAQBank(uint32_t* &iptr, uint32_t *iend)
 		iptr += 2;
 		try{
 			ParseBORbank(iptr, iend);
-		}catch(JException &e){
+		}catch(const JException &e){
 			cerr << e.what();
 		}
 		return;
@@ -994,6 +1001,10 @@ void DEVIOWorkerThread::ParseDataBank(uint32_t* &iptr, uint32_t *iend)
 				ParseEventTagBank(iptr, iend_data_block_bank);
 				break;
 
+			case 0xDEC:  // Helicity decoder board, SD 2025-01-28
+				if(VERBOSE>3) jout <<" -- JLab Helicity Decoder  rocid="<< rocid << endl;
+                ParseHelicityDecoderBank(rocid, iptr, iend_data_block_bank);
+ 				break;
 			case 0:
 			case 1:
 			case 3:
@@ -1373,7 +1384,7 @@ void DEVIOWorkerThread::ParseJLabModuleData(uint32_t rocid, uint32_t* &iptr, uin
                break;
                */
                break;
-
+               
             case DModuleType::UNKNOWN:
             default:
                 jerr<<"Unknown module type ("<<mod_id<<") iptr=0x" << hex << iptr << dec << endl;
@@ -1386,6 +1397,221 @@ void DEVIOWorkerThread::ParseJLabModuleData(uint32_t rocid, uint32_t* &iptr, uin
         }
 	}
 
+}
+
+//----------------
+// ParseHelicityDecoderBank
+//----------------
+void DEVIOWorkerThread::ParseHelicityDecoderBank(uint32_t rocid, uint32_t* &iptr, uint32_t *iend)
+{
+	if(!PARSE_HELICITY){ iptr = &iptr[(*iptr) + 1]; return; }
+
+	auto pe_iter = current_parsed_events.begin();
+	DParsedEvent *pe = NULL;
+	
+	uint32_t slot = 0;
+	uint32_t itrigger = -1;
+
+	uint32_t *istart_helicity_data = iptr;
+    uint32_t Nwords = ((uint64_t)iend - (uint64_t)iptr)/sizeof(uint32_t);
+
+    // Loop over data words
+    for(; iptr<iend; iptr++){
+        // Skip all non-data-type-defining words at this
+        // level. When we do encounter one, the appropriate
+        // case block below should handle parsing all of
+        // the data continuation words and advance the iptr.
+        if(((*iptr>>31) & 0x1) == 0)continue;
+
+        uint32_t data_type = (*iptr>>27) & 0x0F;
+        switch(data_type){
+            case 0: // Block Header
+                slot = (*iptr>>22) & 0x1F;
+                if(VERBOSE>7) cout << "      Helicity Decoder Block Header: slot="<<slot<<" (0x"<<hex<<*iptr<<dec<<")"<<endl;
+               break;
+            case 1: // Block Trailer
+                pe_iter = current_parsed_events.begin();
+				pe = NULL;
+                if(VERBOSE>7) cout << "      Helicity Decoder Block Trailer"<<" (0x"<<hex<<*iptr<<dec<<")  iptr=0x"<<hex<<iptr<<dec<<endl;
+                break;
+// 				// use this as a signal to stop parsing, since it seems like a better signal that this is actually
+// 				// the end of the HD board data
+// 				// at least, during the commissioning at the beginning of the 2025 run, the bank length was not always correct
+//                 if(VERBOSE>3) cout << "      Moving to end of block..."<<endl;
+//                 // usually there are multiple trailer words
+//                 while(*iptr == 0xfcc000ed) iptr++;
+// 
+// 				// Chop off filler words
+// 				for(; iptr<iend; iptr++){
+// 					if(((*iptr)&0xf8000000) != 0xf8000000) break;
+// 				}
+// 				return;
+            case 2: // Event Header
+                itrigger = (*iptr>>0) & 0x3FFFFF;
+				pe = *pe_iter++;
+                if(VERBOSE>7) cout << "      Helicity Decoder Event Header: itrigger="<<itrigger<<", rocid="<<rocid<<", slot="<<slot<<")" <<" (0x"<<hex<<*iptr<<dec<<")" <<endl;
+                break;
+            case 3: // Trigger Time
+				{
+					uint64_t t = ((*iptr)&0xFFFFFF)<<0;
+					if(VERBOSE>7) cout << "      Helicity Decoder Trigger time low word="<<(((*iptr)&0xFFFFFF))<<" (0x"<<hex<<*iptr<<dec<<")"<<endl;
+					iptr++;
+					if(((*iptr>>31) & 0x1) == 0){
+						t += ((*iptr)&0xFFFFFF)<<24; // from word on the street: second trigger time word is optional!!??
+						if(VERBOSE>7) cout << "      Helicity Decoder Trigger time high word="<<(((*iptr)&0xFFFFFF))<<" (0x"<<hex<<*iptr<<dec<<")  iptr=0x"<<hex<<iptr<<dec<<endl;
+					}else{
+						iptr--;
+					}
+					if(VERBOSE>7) cout << "      Helicity Decoder Trigger Time: t="<<t<<endl;
+					if(pe) pe->NEW_DHelicityDataTriggerTime(rocid, slot, itrigger, t);
+				}
+                break;
+            case 8: // Decoder Data
+				{
+ 					// the first word is the header
+					uint32_t header_reserved        = (*iptr>>27);
+					uint32_t header_number_words    = (*iptr>>0 ) & 0x1F;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data Header (0x"<<hex<<*iptr<<dec<<") header reserved=" << header_reserved << " header number words="<<header_number_words <<endl;
+					
+					// sanity checks
+					if(header_reserved != 0x18)  { 
+						jerr << "Bad helicity decoder header for rocid="<<rocid<<" slot="<<slot<<"  reserved field = 0x"<<hex<<header_reserved<<dec<<"  (expected=0x18)"<<endl; 
+						throw JExceptionDataFormat("Bad helicity decoder header data", __FILE__, __LINE__);
+					}
+					if(header_number_words != 14)  { 
+						jerr << "Bad helicity decoder header for rocid="<<rocid<<" slot="<<slot<<"  number words = "<<header_number_words<<"  (expected=14)"<<endl; 
+						throw JExceptionDataFormat("Bad helicity decoder header payload", __FILE__, __LINE__);
+					}
+
+					iptr++;
+					
+					// Word 1 - Helicity seed
+					uint32_t expected_helicity_state    = (*iptr>>31) & 0x01;
+					uint32_t recovered_helicity_seed    = (*iptr>>0) & 0x3FFFFFFF;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 1(0x"<<hex<<*iptr<<dec<<")  expected_helicity_state="<<expected_helicity_state<<"  recovered_helicity_seed=0x"<<hex<<*iptr<<dec<<recovered_helicity_seed<<endl;
+					iptr++;
+					
+					// Word 2 - Count of falling edge T_STABLE
+					uint32_t falling_edge_tstable_count = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 2(0x"<<hex<<*iptr<<dec<<")  falling_edge_tstable_count="<<falling_edge_tstable_count<<endl;
+					iptr++;
+					
+					// Word 3 - Count of rising edge T_STABLE
+					uint32_t rising_edge_tstable_count = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 3(0x"<<hex<<*iptr<<dec<<")  rising_edge_tstable_count="<<rising_edge_tstable_count<<endl;
+					iptr++;
+					
+					// Word 4 - Count of PATTERN_SYNC
+					uint32_t pattern_sync_count = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 4(0x"<<hex<<*iptr<<dec<<")  pattern_sync_count="<<pattern_sync_count<<endl;
+					iptr++;
+					
+					// Word 5 - Count of PAIR_SYNC
+					uint32_t pair_sync_count = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 5(0x"<<hex<<*iptr<<dec<<")  pair_sync_count="<<pair_sync_count<<endl;
+					iptr++;
+					
+					// Word 6 - Time of trigger from start of T_STABLE interval
+					uint32_t time_from_start_tstable = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 6(0x"<<hex<<*iptr<<dec<<")  time_from_start_tstable="<<time_from_start_tstable<<endl;
+					iptr++;
+					
+					// Word 7 - Time of trigger from end of T_STABLE interval
+					uint32_t time_from_end_tstable = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 7(0x"<<hex<<*iptr<<dec<<")  time_from_end_tstable="<<time_from_end_tstable<<endl;
+					iptr++;
+					
+					// Word 8 - Time duration of last complete T_STABLE interval
+					uint32_t duration_last_tstable = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 8(0x"<<hex<<*iptr<<dec<<")  duration_last_tstable="<<duration_last_tstable<<endl;
+					iptr++;
+					
+					// Word 9 - Time duration of last complete T_SETTLE interval
+					uint32_t duration_last_tsettle = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 9(0x"<<hex<<*iptr<<dec<<")  duration_last_tsettle="<<duration_last_tsettle<<endl;
+					iptr++;
+					
+					// Word 10 - Status at trigger time
+					bool trigger_tstable                       = (*iptr>>0 ) & 0x1;
+					bool trigger_pattern_sync                  = (*iptr>>1 ) & 0x1;
+					bool trigger_pair_sync                     = (*iptr>>2 ) & 0x1;
+					bool trigger_helicity_state                = (*iptr>>3 ) & 0x1;
+					bool trigger_helicity_state_pattern_start  = (*iptr>>4 ) & 0x1;
+					bool trigger_event_polarity                = (*iptr>>5 ) & 0x1;
+					uint32_t trigger_pattern_phase_count       = (*iptr>>8 ) & 0xFF;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 10(0x"<<hex<<*iptr<<dec<<")  trigger_tstable="<<trigger_tstable<<"  trigger_pattern_sync="<<trigger_pattern_sync<<"  trigger_pair_sync="<<trigger_pair_sync<<"  trigger_helicity_state="<<trigger_helicity_state<<endl;
+					iptr++;
+					
+					// Word 11 - Last 32 windows of PATTERN_SYNC
+					uint32_t last_pattern_sync = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 11(0x"<<hex<<*iptr<<dec<<")  last_pattern_sync="<<last_pattern_sync<<endl;
+					iptr++;
+					
+					// Word 12 - Last 32 windows of PAIR_SYNC
+					uint32_t last_pair_sync = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 12(0x"<<hex<<*iptr<<dec<<")  last_pair_sync="<<last_pair_sync<<endl;
+					iptr++;
+					
+					// Word 13 - Last 32 windows of HELICITY_STATE
+					uint32_t last_helicity_state = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 13(0x"<<hex<<*iptr<<dec<<")  last_helicity_state="<<last_helicity_state<<endl;
+					iptr++;
+					
+					// Word 14 - Last 32 values of HELICITY_STATE at PATTERN_SYNC
+					uint32_t last_helicity_state_pattern_sync = *iptr;
+					if(VERBOSE>7) cout << "      Helicity Decoder Data word 14(0x"<<hex<<*iptr<<dec<<")  last_helicity_state_pattern_sync="<<last_helicity_state_pattern_sync<<endl;
+							
+					if( pe ) {
+						uint32_t channel=0;  // set this by hand for now?
+						pe->NEW_DHelicityData(rocid, slot, channel, itrigger
+						, expected_helicity_state
+						, recovered_helicity_seed
+						, falling_edge_tstable_count
+						, rising_edge_tstable_count
+						, pattern_sync_count
+						, pair_sync_count
+						, time_from_start_tstable
+						, time_from_end_tstable
+						, duration_last_tstable
+						, duration_last_tsettle
+						, trigger_tstable
+						, trigger_pattern_sync
+						, trigger_pair_sync
+						, trigger_helicity_state
+						, trigger_helicity_state_pattern_start
+						, trigger_event_polarity
+						, trigger_pattern_phase_count
+						, last_pattern_sync
+						, last_pair_sync
+						, last_helicity_state
+						, last_helicity_state_pattern_sync);
+					}
+				
+				}
+                break;
+            case 14: // Data not valid (empty module)
+            case 15: // Filler (non-data) word
+            	if(VERBOSE>7) cout << "      Helicity Decoder Event Trailer, Data not Valid, or Filler word ("<<data_type<<")"<<" (0x"<<hex<<*iptr<<dec<<")"<<endl;
+				break;
+			default:
+ 				if(VERBOSE>7) cout << "      Helicity Decoder unknown data type ("<<data_type<<")"<<" (0x"<<hex<<*iptr<<dec<<")"<<endl;
+				jerr << "Helicity Decoder unknown data type (" << data_type << ") (0x" << hex << *iptr << dec << ")" << endl;
+ 				cout.flush(); cerr.flush();
+ 				DumpBinary(istart_helicity_data, iend, Nwords, iptr);
+
+// 				if (continue_on_format_error) {  // comment out for now??
+// 					iptr = iend;
+// 					return;
+// 				}
+// 				else
+				throw JExceptionDataFormat("Unexpected word type in Helicity Decoder block!", __FILE__, __LINE__);
+        }
+    }
+
+    // Chop off filler words
+    for(; iptr<iend; iptr++){
+        if(((*iptr)&0xf8000000) != 0xf8000000) break;
+    }
 }
 
 //----------------
@@ -1448,7 +1674,7 @@ void DEVIOWorkerThread::Parsef250Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
             case 4: // Window Raw Data
                 // iptr passed by reference and so will be updated automatically
                 if(VERBOSE>7) cout << "      FADC250 Window Raw Data"<<" (0x"<<hex<<*iptr<<dec<<")"<<endl;
-                if(pe) MakeDf250WindowRawData(pe, rocid, slot, itrigger, iptr);
+                if(pe) MakeDf250WindowRawData(pe, rocid, slot, itrigger, iptr, iend);
                 break;
             case 5: // Window Sum
 				{
@@ -1636,7 +1862,7 @@ void DEVIOWorkerThread::Parsef250Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
 //----------------
 // MakeDf250WindowRawData
 //----------------
-void DEVIOWorkerThread::MakeDf250WindowRawData(DParsedEvent *pe, uint32_t rocid, uint32_t slot, uint32_t itrigger, uint32_t* &iptr)
+void DEVIOWorkerThread::MakeDf250WindowRawData(DParsedEvent *pe, uint32_t rocid, uint32_t slot, uint32_t itrigger, uint32_t* &iptr, uint32_t* &iend)
 {
     uint32_t channel = (*iptr>>23) & 0x0F;
     uint32_t window_width = (*iptr>>0) & 0x0FFF;
@@ -1654,6 +1880,9 @@ void DEVIOWorkerThread::MakeDf250WindowRawData(DParsedEvent *pe, uint32_t rocid,
             break;
         }
 
+        if (iptr >= iend) jerr << "fa250 window raw data are incomplete - the collection of samples has been truncated!" << endl;
+        if (iptr >= iend) break;
+	
         bool invalid_1 = (*iptr>>29) & 0x1;
         bool invalid_2 = (*iptr>>13) & 0x1;
         uint16_t sample_1 = 0;
@@ -1738,7 +1967,7 @@ void DEVIOWorkerThread::Parsef125Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
             case 4: // Window Raw Data
 					// iptr passed by reference and so will be updated automatically
 					if(VERBOSE>7) cout << "      FADC125 Window Raw Data"<<endl;
-					if(pe) MakeDf125WindowRawData(pe, rocid, slot, itrigger, iptr);
+					if(pe) MakeDf125WindowRawData(pe, rocid, slot, itrigger, iptr, iend);
 					break;
 
             case 5: // CDC pulse data (new)  (GlueX-doc-2274-v8)
@@ -1758,11 +1987,19 @@ void DEVIOWorkerThread::Parsef125Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
 					// Word 2:
 					++iptr;
 					if(iptr>=iend){
-						jerr << " Truncated f125 CDC hit (block ends before continuation word!)" << endl;
+					  PrintLimitCDC++;
+					  if (PrintLimitCDC == 10) jerr << "Truncated f125 CDC hit: further warnings supressed"  << endl;	
+					  if (PrintLimitCDC<10) {
+					    jerr << " Truncated f125 CDC hit (block ends before continuation word!)" << endl;
 						continue;
+					  }
 					}
 					if( ((*iptr>>31) & 0x1) != 0 ){
-						jerr << " Truncated f125 CDC hit (missing continuation word!)" << endl;
+					  PrintLimitCDC++;
+					  if (PrintLimitCDC == 10) jerr << "Truncated f125 CDC hit: further warnings supressed"  << endl;	
+					  if (PrintLimitCDC<10)
+					    jerr << " Truncated f125 CDC hit (missing continuation word!)" << endl;
+						--iptr;
 						continue;
 					}
 					uint32_t word2      = *iptr;
@@ -1810,33 +2047,43 @@ void DEVIOWorkerThread::Parsef125Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
 						cout << "      FADC125 FDC Pulse Data (chan="<<channel<<" pulse="<<pulse_number<<" time="<<pulse_time<<" QF="<<quality_factor<<" OC="<<overflow_count<<")"<<endl;
 					}
 
-					// Word 2:
-					++iptr;
-					if(iptr>=iend){
-						jerr << " Truncated f125 FDC hit (block ends before continuation word!)" << endl;
-						continue;
-					}
-					if( ((*iptr>>31) & 0x1) != 0 ){
-						jerr << " Truncated f125 FDC hit (missing continuation word!)" << endl;
-						continue;
-					}
-					uint32_t word2      = *iptr;
-					uint32_t pulse_peak = 0;
-					uint32_t sum        = (*iptr>>19) & 0xFFF;
-					uint32_t peak_time  = (*iptr>>11) & 0xFF;
-					uint32_t pedestal   = (*iptr>>0 ) & 0x7FF;
-					if(VERBOSE>7){
-						cout << "      FADC125 FDC Pulse Data(integral) word2: " << hex << (*iptr) << dec << endl;
-						cout << "      FADC125 FDC Pulse Data (integral="<<sum<<" time="<<peak_time<<" pedestal="<<pedestal<<")"<<endl;
-					}
+					// Word 2 should be present for each peak found (a total of pulse_number times)				  
+					
+					for (uint32_t nword = 2; nword < 2+pulse_number; nword++) {
+					      // Word 2:
+					      ++iptr;
+					      if(iptr>=iend){
+						PrintLimitFDC++;
+						if (PrintLimitFDC == 10) jerr << "Truncated f125 FDC hit: further warnings supressed"  << endl;	
+						if (PrintLimitFDC<10)
+						  jerr << " Truncated f125 FDC hit (block ends before continuation word!)" << endl;
+						    break;
+					      }
+					      if( ((*iptr>>31) & 0x1) != 0 ){
+						PrintLimitFDC++;
+						if (PrintLimitFDC == 10) jerr << "Truncated f125 FDC hit: further warnings supressed"  << endl;	
+						if (PrintLimitFDC<10)
+						  jerr << " Truncated f125 FDC hit (missing continuation word) from rocid=" << rocid << " slot=" << slot << " chan=" << channel << " pulse_number="<<pulse_number << endl;
+						    --iptr; 
+						    break;
+					      }
+					      uint32_t word2      = *iptr;
+					      uint32_t pulse_peak = 0;
+					      uint32_t sum        = (*iptr>>19) & 0xFFF;
+					      uint32_t peak_time  = (*iptr>>11) & 0xFF;
+					      uint32_t pedestal   = (*iptr>>0 ) & 0x7FF;
+					      if(VERBOSE>7){
+					            cout << "      FADC125 FDC Pulse Data(integral) word2: " << hex << (*iptr) << dec << endl;
+					            cout << "      FADC125 FDC Pulse Data (integral="<<sum<<" time="<<peak_time<<" pedestal="<<pedestal<<")"<<endl;
+					      }
 
-					// Create hit objects
-					uint32_t nsamples_integral = 0;  // must be overwritten later in GetObjects with value from Df125Config value
-					uint32_t nsamples_pedestal = 1;  // The firmware pedestal divided by 2^PBIT where PBIT is a config. parameter
+					      // Create hit objects
+					      uint32_t nsamples_integral = 0;  // must be overwritten later in GetObjects with value from Df125Config value
+					      uint32_t nsamples_pedestal = 1;  // The firmware pedestal divided by 2^PBIT where PBIT is a config. parameter
 
-					if( pe ) {
-						pe->NEW_Df125FDCPulse(rocid, slot, channel, itrigger
-									, pulse_number        // NPK
+					      if( pe ) {
+						    pe->NEW_Df125FDCPulse(rocid, slot, channel, itrigger
+									, nword - 1            // pulse number
 									, pulse_time          // le_time
 									, quality_factor      // time_quality_bit
 									, overflow_count      // overflow_count
@@ -1849,7 +2096,8 @@ void DEVIOWorkerThread::Parsef125Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
 									, nsamples_pedestal   // nsamples_pedestal
 									, nsamples_integral   // nsamples_integral
 									, false);             // emulated
-					}
+					      }
+					} // end of collection of multiple peak data					
 				}
                 break;
 
@@ -1895,43 +2143,52 @@ void DEVIOWorkerThread::Parsef125Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
 						cout << "      FADC125 FDC Pulse Data (chan="<<channel<<" pulse="<<pulse_number<<" time="<<pulse_time<<" QF="<<quality_factor<<" OC="<<overflow_count<<")"<<endl;
 					}
 
-					// Word 2:
-					++iptr;
-					if(iptr>=iend){
-						jerr << " Truncated f125 FDC hit (block ends before continuation word!)" << endl;
-						continue;
-					}
-					if( ((*iptr>>31) & 0x1) != 0 ){
-						jerr << " Truncated f125 FDC hit (missing continuation word!)" << endl;
-						continue;
-					}
-					uint32_t word2      = *iptr;
-					uint32_t pulse_peak = (*iptr>>19) & 0xFFF;
-					uint32_t sum        = 0;
-					uint32_t peak_time  = (*iptr>>11) & 0xFF;
-					uint32_t pedestal   = (*iptr>>0 ) & 0x7FF;
-					if(VERBOSE>7){
-						cout << "      FADC125 FDC Pulse Data(peak) word2: " << hex << (*iptr) << dec << endl;
-						cout << "      FADC125 FDC Pulse Data (integral="<<sum<<" time="<<peak_time<<" pedestal="<<pedestal<<")"<<endl;
-					}
+					// Word 2 should be present for each peak found (a total of pulse_number times)				  					
+					for (uint32_t nword = 2; nword < 2+pulse_number; nword++) {
+					       // Word 2:
+					      ++iptr;
+					      if(iptr>=iend){
+						PrintLimitFDC++;
+						if (PrintLimitFDC == 10) jerr << "Truncated f125 FDC hit: further warnings supressed"  << endl;	
+						if (PrintLimitFDC<10)
+						  jerr << " Truncated f125 FDC hit (block ends before continuation word!)" << endl;
+						    break;
+					      }
+					      if( ((*iptr>>31) & 0x1) != 0 ){
+						PrintLimitFDC++;
+						  if (PrintLimitFDC == 10) jerr << "Truncated f125 FDC hit: further warnings supressed"  << endl;	
+						if (PrintLimitFDC<10)
+						  jerr << " Truncated f125 FDC hit (missing continuation word) from rocid=" << rocid << " slot=" << slot << " chan=" << channel << " pulse_number="<<pulse_number << endl;
+						    --iptr;
+						    break;
+					      }
+					      uint32_t word2      = *iptr;
+					      uint32_t pulse_peak = (*iptr>>19) & 0xFFF;
+					      uint32_t sum        = 0;
+					      uint32_t peak_time  = (*iptr>>11) & 0xFF;
+					      uint32_t pedestal   = (*iptr>>0 ) & 0x7FF;
+					      if(VERBOSE>7){
+						    cout << "      FADC125 FDC Pulse Data(peak) word2: " << hex << (*iptr) << dec << endl;
+						    cout << "      FADC125 FDC Pulse Data (integral="<<sum<<" time="<<peak_time<<" pedestal="<<pedestal<<")"<<endl;
+					      }
 
-					// Create hit objects
-					uint32_t nsamples_integral = 0;  // must be overwritten later in GetObjects with value from Df125Config value
-					uint32_t nsamples_pedestal = 1;  // The firmware pedestal divided by 2^PBIT where PBIT is a config. parameter
+					      // Create hit objects
+					      uint32_t nsamples_integral = 0;  // must be overwritten later in GetObjects with value from Df125Config value
+					      uint32_t nsamples_pedestal = 1;  // The firmware pedestal divided by 2^PBIT where PBIT is a config. parameter
 
-					if( pe ) {
+					      if( pe ) {
 					
-						// The following is a temporary fix. In late 2017 the CDC group started
-						// using data type 9 (i.e. FDC pulse peak). This caused many conflicts
-						// with plugins downstream that were built around there being a Df125CDCPulse
-						// object associated with the DCDCDigiHit. In order to quickly solve
-						// the issue as the run was starting, this fix was made to produce Df125CDCPulse
-						// object from this data iff rocid<30 indicating the data came from the
-						// CDC. 
-						if( rocid<30 ){
+						    // The following is a temporary fix. In late 2017 the CDC group started
+						    // using data type 9 (i.e. FDC pulse peak). This caused many conflicts
+						    // with plugins downstream that were built around there being a Df125CDCPulse
+						    // object associated with the DCDCDigiHit. In order to quickly solve
+						    // the issue as the run was starting, this fix was made to produce Df125CDCPulse
+						    // object from this data iff rocid<30 indicating the data came from the
+						    // CDC. 
+						    if( rocid<30 ){
 
-							pe->NEW_Df125CDCPulse(rocid, slot, channel, itrigger
-										, pulse_number        // NPK
+							  pe->NEW_Df125CDCPulse(rocid, slot, channel, itrigger
+										, nword - 1            // pulse number
 										, pulse_time          // le_time
 										, quality_factor      // time_quality_bit
 										, overflow_count      // overflow_count
@@ -1944,10 +2201,10 @@ void DEVIOWorkerThread::Parsef125Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
 										, nsamples_integral   // nsamples_integral
 										, false);             // emulated
 						
-						}else{
+						    }else{
 					
-							pe->NEW_Df125FDCPulse(rocid, slot, channel, itrigger
-										, pulse_number        // NPK
+							  pe->NEW_Df125FDCPulse(rocid, slot, channel, itrigger
+										, nword - 1            // pulse number
 										, pulse_time          // le_time
 										, quality_factor      // time_quality_bit
 										, overflow_count      // overflow_count
@@ -1960,8 +2217,9 @@ void DEVIOWorkerThread::Parsef125Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
 										, nsamples_pedestal   // nsamples_pedestal
 										, nsamples_integral   // nsamples_integral
 										, false);             // emulated
-						}
-					}
+						    }
+					      }
+					}  // end of collection of multiple peak data
 				}
                 break;
 
@@ -1999,7 +2257,7 @@ void DEVIOWorkerThread::Parsef125Bank(uint32_t rocid, uint32_t* &iptr, uint32_t 
 //----------------
 // MakeDf125WindowRawData
 //----------------
-void DEVIOWorkerThread::MakeDf125WindowRawData(DParsedEvent *pe, uint32_t rocid, uint32_t slot, uint32_t itrigger, uint32_t* &iptr)
+void DEVIOWorkerThread::MakeDf125WindowRawData(DParsedEvent *pe, uint32_t rocid, uint32_t slot, uint32_t itrigger, uint32_t* &iptr, uint32_t* &iend)
 {
     uint32_t channel = (*iptr>>20) & 0x7F;
     uint32_t window_width = (*iptr>>0) & 0x0FFF;
@@ -2007,31 +2265,33 @@ void DEVIOWorkerThread::MakeDf125WindowRawData(DParsedEvent *pe, uint32_t rocid,
     Df125WindowRawData *wrd = pe->NEW_Df125WindowRawData(rocid, slot, channel, itrigger);
 
     for(uint32_t isample=0; isample<window_width; isample +=2){
-
+      
         // Advance to next word
         iptr++;
 
         // Make sure this is a data continuation word, if not, stop here
         if(((*iptr>>31) & 0x1) != 0x0)break;
 
-        bool invalid_1 = (*iptr>>29) & 0x1;
-        bool invalid_2 = (*iptr>>13) & 0x1;
-        uint16_t sample_1 = 0;
+        if (iptr >= iend) jerr << "fa125 window raw data are incomplete - the collection of samples has been truncated!" << endl;
+        if (iptr >= iend) break;
+	
+        uint16_t sample_1 = (*iptr>>16) & 0xFFF;
+
         uint16_t sample_2 = 0;
-        if(!invalid_1)sample_1 = (*iptr>>16) & 0x1FFF;
-        if(!invalid_2)sample_2 = (*iptr>>0) & 0x1FFF;
+        bool invalid_2 = (*iptr>>13) & 0x1;
+	if(!invalid_2)sample_2 = (*iptr>>0) & 0xFFF;
 
         // Sample 1
         wrd->samples.push_back(sample_1);
-        wrd->invalid_samples |= invalid_1;
-        wrd->overflow |= (sample_1>>12) & 0x1;
+        wrd->invalid_samples = 0;
+        wrd->overflow = 0;
 
         if((isample+2) == window_width && invalid_2)break; // skip last sample if flagged as invalid
 
         // Sample 2
         wrd->samples.push_back(sample_2);
         wrd->invalid_samples |= invalid_2;
-        wrd->overflow |= (sample_2>>12) & 0x1;
+        wrd->overflow = 0;
     }
 }
 
@@ -2171,6 +2431,8 @@ void DEVIOWorkerThread::ParseF1TDCBank(uint32_t rocid, uint32_t* &iptr, uint32_t
 void DEVIOWorkerThread::ParseSSPBank(uint32_t rocid, uint32_t* &iptr, uint32_t *iend)
 {
 	if(!PARSE_SSP){ iptr = &iptr[(*iptr) + 1]; return; }
+
+	int continue_on_format_error = SKIP_SSP_FORMAT_ERROR;
 	
 	auto pe_iter = current_parsed_events.begin();
 	DParsedEvent *pe = NULL;
@@ -2208,6 +2470,13 @@ void DEVIOWorkerThread::ParseSSPBank(uint32_t rocid, uint32_t* &iptr, uint32_t *
 				if(VERBOSE>7) cout << "     SSP/DIRC Event Header:  slot=" << slot << " itrigger=" << itrigger << endl;
 				if( slot != slot_bh ){
 					jerr << "Slot from SSP/DIRC event header does not match slot from last block header (" <<slot<<" != " << slot_bh << ")" <<endl;
+					
+					if (continue_on_format_error) {
+						iptr = iend;
+						return;
+					}	
+					else
+						throw JException("Bad SSP Data!", __FILE__, __LINE__);
 				}
 				break;
 			case 3:  // Trigger Time

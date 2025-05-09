@@ -1,5 +1,4 @@
 #include "JEventProcessor_highlevel_online.h"
-using namespace jana;
 
 #include <DAQ/Df250PulseData.h>
 
@@ -14,15 +13,18 @@ using namespace jana;
 #include <DAQ/DF1TDCHit.h>
 #include <DAQ/DCODAEventInfo.h>
 #include <DAQ/DEPICSvalue.h>
-
+#include <DAQ/DBeamHelicity.h>
+#include <DANA/DEvent.h>
+#include <PAIR_SPECTROMETER/DPSCHit.h>
+#include <FDC/DFDCHit.h>
 
 // Routine used to create our JEventProcessor
 #include <JANA/JApplication.h>
-#include <JANA/JFactory.h>
+#include <JANA/JFactoryT.h>
 extern "C"{
   void InitPlugin(JApplication *app){
     InitJANAPlugin(app);
-    app->AddProcessor(new JEventProcessor_highlevel_online());
+    app->Add(new JEventProcessor_highlevel_online());
   }
 } // "C"
 
@@ -30,6 +32,7 @@ extern "C"{
 // Hit types that include F1TDC information
 #define F1Types(X) \
 	X(DRFTime)  \
+	X(DPSCHit)   \
 	X(DSCHit)   \
 	X(DFDCHit)  \
 	X(DBCALUnifiedHit)
@@ -64,6 +67,13 @@ template<> bool   F1CheckTDCOnly<DSCHit  >(const DSCHit*          hit){ return !
 template<> double F1tdiff<DSCHit         >(const DSCHit*          hit){ return hit->t_TDC - hit->t_fADC;       }
 template<> double F1tdiff2<DSCHit        >(const DSCHit* hit, const DSCHit* hit2){ return hit->t_TDC - hit2->t_fADC; }
 template<> bool   F1CheckSameChannel<DSCHit >(const DSCHit* hit,const DSCHit* hit2){ return hit->sector==hit2->sector;    }
+
+template<> bool   F1Check<DPSCHit        >(const DPSCHit*          hit){ return hit->has_fADC && hit->has_TDC;  }
+template<> bool   F1CheckADCOnly<DPSCHit >(const DPSCHit*          hit){ return hit->has_fADC && !hit->has_TDC; }
+template<> bool   F1CheckTDCOnly<DPSCHit >(const DPSCHit*          hit){ return !hit->has_fADC && hit->has_TDC; }
+template<> double F1tdiff<DPSCHit        >(const DPSCHit*          hit){ return hit->time_tdc - hit->time_fadc;       }
+template<> double F1tdiff2<DPSCHit       >(const DPSCHit* hit, const DPSCHit* hit2){ return hit->time_tdc - hit2->time_fadc; }
+template<> bool   F1CheckSameChannel<DPSCHit >(const DPSCHit* hit,const DPSCHit* hit2){ return hit->module==hit2->module;    }
 
 template<> bool   F1Check<DTAGHHit       >(const DTAGHHit*        hit){ return hit->has_fADC && hit->has_TDC; }
 template<> bool   F1CheckADCOnly<DTAGHHit>(const DTAGHHit*        hit){	return hit->has_fADC && !(hit->has_TDC); }
@@ -120,7 +130,7 @@ void JEventProcessor_highlevel_online::FillF1Hist(vector<const T*> hits)
 				pair<int,int> rocid_slot(f1hit->rocid, f1hit->slot);
 				double fbin = f1tdc_bin_map[rocid_slot];
 				double tdiff = F1tdiff(hit);
-				dF1TDC_fADC_tdiff->Fill(fbin, tdiff);
+				dF1TDC_fADC_tdiff->Fill(fbin+1, tdiff);
 			}
 		}
 
@@ -139,7 +149,7 @@ void JEventProcessor_highlevel_online::FillF1Hist(vector<const T*> hits)
 							pair<int,int> rocid_slot(f1hit->rocid, f1hit->slot);
 							double fbin = f1tdc_bin_map[rocid_slot];
 							double tdiff = F1tdiff2(hit2,hit);
-							dF1TDC_fADC_tdiff->Fill(fbin, tdiff);
+							dF1TDC_fADC_tdiff->Fill(fbin+1, tdiff);
 						}
 					}
 				}
@@ -149,10 +159,13 @@ void JEventProcessor_highlevel_online::FillF1Hist(vector<const T*> hits)
 }
 
 //------------------
-// init
+// Init
 //------------------
-jerror_t JEventProcessor_highlevel_online::init(void)
+void JEventProcessor_highlevel_online::Init()
 {
+	auto app = GetApplication();
+	lockService = app->GetService<JLockService>();
+
 	//timing cuts
 	dTimingCutMap[Gamma][SYS_BCAL] = 3.0;
 	dTimingCutMap[Gamma][SYS_FCAL] = 5.0;
@@ -176,8 +189,6 @@ jerror_t JEventProcessor_highlevel_online::init(void)
 	dTimingCutMap[Positron][SYS_TOF] = 2.0;
 	dTimingCutMap[Positron][SYS_BCAL] = 2.5;
 	dTimingCutMap[Positron][SYS_FCAL] = 3.0;
-
-	japp->RootWriteLock();
 
 	// All histograms go in the "highlevel" directory
 	TDirectory *main = gDirectory;
@@ -275,8 +286,8 @@ jerror_t JEventProcessor_highlevel_online::init(void)
 	d2gamma = new TH1I("TwoGammaMass", "2#gamma inv. mass;2#gamma inv. mass (GeV)", 400, 0.0, 1.2);
 
 	isExclusive = true;
-	if(gPARMS){
-	  gPARMS->SetDefaultParameter("HIGHLEVEL_ONLINE:EXCLUSIVE", isExclusive, "Require exclusivity for meson production plots");
+	if(app){
+	  app->SetDefaultParameter("HIGHLEVEL_ONLINE:EXCLUSIVE", isExclusive, "Require exclusivity for meson production plots");
 	}
 
 	// pi+ pi-
@@ -305,6 +316,8 @@ jerror_t JEventProcessor_highlevel_online::init(void)
 	dme_omega = new TH1I("PiPlusPiMinusPiZero_me", ";#pi^{+}#pi^{-}#pi^{0} missing energy (GeV)", 500, -1.0, 1.0);
 	
 	dbeta_vs_p = new TH2I("BetaVsP", "#beta vs. p (best FOM all charged tracks);p (GeV);#beta", 200, 0.0, 2.0, 100, 0.0, 1.2);
+	dbeta_vs_p_TOF = new TH2I("BetaVsP_TOF", "#beta vs. p (best FOM all charged tracks in TOF);p (GeV);#beta", 200, 0.0, 2.0, 100, 0.0, 1.2);
+	dbeta_vs_p_BCAL = new TH2I("BetaVsP_BCAL", "#beta vs. p (best FOM all charged tracks in BCAL);p (GeV);#beta", 200, 0.0, 2.0, 100, 0.0, 1.2);
 
 	/*************************************************************** F1 TDC - fADC time ***************************************************************/
 
@@ -318,10 +331,11 @@ jerror_t JEventProcessor_highlevel_online::init(void)
 		if( slot<=13 ) f1tdc_rocid_slot[33].insert(slot); // BCAL3
 		if( slot<=13 ) f1tdc_rocid_slot[39].insert(slot); // BCAL9
 		if( slot<=13 ) f1tdc_rocid_slot[42].insert(slot); // BCAL12
-		if( slot<=17 ) f1tdc_rocid_slot[51].insert(slot); // FDC1
+		if( slot<=16 ) f1tdc_rocid_slot[51].insert(slot); // FDC1
 		if( slot<=16 ) f1tdc_rocid_slot[54].insert(slot); // FDC4
 		if( slot<=16 ) f1tdc_rocid_slot[63].insert(slot); // FDC13
 		if( slot<=16 ) f1tdc_rocid_slot[64].insert(slot); // FDC14
+		
 	}
 	
 	// Create map that can be used to find the correct bin given the rocid,slot
@@ -333,7 +347,7 @@ jerror_t JEventProcessor_highlevel_online::init(void)
 	}
 	
 	// Create histogram with bin labels
-	dF1TDC_fADC_tdiff = new TH2D("F1TDC_fADC_tdiff", "F1TDC - fADC Time diff", f1tdc_bin_map.size(), 0.5, 0.5+(double)f1tdc_bin_map.size(), 64, -64.0, 64.0);
+	dF1TDC_fADC_tdiff = new TH2D("F1TDC_fADC_tdiff", "F1TDC & fADC Time diff vs. rocid / slot", f1tdc_bin_map.size(), 0.5, 0.5+(double)f1tdc_bin_map.size(), 64, -64.0, 64.0);
 	dF1TDC_fADC_tdiff->SetStats(0);
 	dF1TDC_fADC_tdiff->SetYTitle("TDC - ADC in ns (or TDC/50 time for FDC)");
 	for(auto p : f1tdc_bin_map){
@@ -341,32 +355,31 @@ jerror_t JEventProcessor_highlevel_online::init(void)
 		int slot  = p.first.second;
 		int jbin  = p.second;
 		char str[256];
-		sprintf(str, "rocid%d slot%d", rocid, slot);
-		dF1TDC_fADC_tdiff->GetXaxis()->SetBinLabel(jbin, str);
+		sprintf(str, "R %d - S %d", rocid, slot);
+		dF1TDC_fADC_tdiff->GetXaxis()->SetBinLabel(jbin+1, str);
 	}
 	
+	/*************************************************************** Helicity ***************************************************************/
+
+	dHist_heli_asym_gtp = new TH2I("Heli_asym_gtp", "Helicity Asymmetry per Trigger bit from GTP; Trig. bit (1-32); Helicity Asymmetry ", 34, 0.5, 34.5, 2, -0.5, 1.5);
 
 	// back to main dir
 	main->cd();
-  
-	japp->RootUnLock();
- 
-	return NOERROR;
 }
 
 //------------------
-// brun
+// BeginRun
 //------------------
-jerror_t JEventProcessor_highlevel_online::brun(JEventLoop *locEventLoop, int32_t runnumber)
+void JEventProcessor_highlevel_online::BeginRun(const std::shared_ptr<const JEvent>& event)
 {
   // This is called whenever the run number changes
 	vector<double> locBeamPeriodVector;
-	locEventLoop->GetCalib("PHOTON_BEAM/RF/beam_period", locBeamPeriodVector);
+	GetCalib(event, "PHOTON_BEAM/RF/beam_period", locBeamPeriodVector);
 	dBeamBunchPeriod = locBeamPeriodVector[0];
 
 	dCoherentPeakRange = pair<double, double>(8.4, 9.0);
 	map<string, double> photon_beam_param;
-	if(locEventLoop->GetCalib("/PHOTON_BEAM/coherent_energy", photon_beam_param) == false)
+	if(DEvent::GetCalib(event, "/PHOTON_BEAM/coherent_energy", photon_beam_param) == false)
 		dCoherentPeakRange = pair<double, double>(photon_beam_param["cohmin_energy"], photon_beam_param["cohedge_energy"]);
 
 	fcal_cell_thr  =  65;
@@ -378,101 +391,102 @@ jerror_t JEventProcessor_highlevel_online::brun(JEventLoop *locEventLoop, int32_
 	fcal_col_mask_min = 26;
 	fcal_col_mask_max = 32;
 
-	if( runnumber < 11127 )
+	if( event->GetRunNumber() < 11127 )
 	{
 		fcal_row_mask_min = 24;
 		fcal_row_mask_max = 34;
 		fcal_col_mask_min = 24;
 		fcal_col_mask_max = 34;
 	}
-
-	return NOERROR;
 }
 
 //------------------
-// evnt
+// Process
 //------------------
-jerror_t JEventProcessor_highlevel_online::evnt(JEventLoop *locEventLoop, uint64_t eventnumber)
+void JEventProcessor_highlevel_online::Process(const std::shared_ptr<const JEvent>& locEvent)
 {
 	vector<const DTrackTimeBased*> locTrackTimeBasedVector;
-	locEventLoop->Get(locTrackTimeBasedVector);
+	locEvent->Get(locTrackTimeBasedVector);
 
 	vector<const DBeamPhoton*> locBeamPhotons;
-	locEventLoop->Get(locBeamPhotons);
+	locEvent->Get(locBeamPhotons);
 
 	vector<const DPSPair*> locPSPairs;
-	locEventLoop->Get(locPSPairs);
+	locEvent->Get(locPSPairs);
 
 	vector<const DPSCPair*> locPSCPairs;
-	locEventLoop->Get(locPSCPairs);
+	locEvent->Get(locPSCPairs);
 
 	vector<const DFCALShower*> locFCALShowers;
-	locEventLoop->Get(locFCALShowers);
+	locEvent->Get(locFCALShowers);
 
 	vector<const DBCALShower*> locBCALShowers;
-	locEventLoop->Get(locBCALShowers);
+	locEvent->Get(locBCALShowers);
 
 	vector<const DNeutralShower*> locNeutralShowers;
-	locEventLoop->Get(locNeutralShowers);
+	locEvent->Get(locNeutralShowers);
 
 	vector<const DNeutralParticle*> locNeutralParticles;
-	locEventLoop->Get(locNeutralParticles, "PreSelect");
+	locEvent->Get(locNeutralParticles, "PreSelect");
 
 	vector<const DTOFPoint*> locTOFPoints;
-	locEventLoop->Get(locTOFPoints);
+	locEvent->Get(locTOFPoints);
 
 	vector<const DSCHit*> locSCHits;
-	locEventLoop->Get(locSCHits);
+	locEvent->Get(locSCHits);
 
 	vector<const DTAGHHit*> locTAGHHits;
-	locEventLoop->Get(locTAGHHits);
+	locEvent->Get(locTAGHHits);
 
 	vector<const DBCALDigiHit*> locBCALDigiHits;
-	locEventLoop->Get(locBCALDigiHits);
+	locEvent->Get(locBCALDigiHits);
         
 	vector<const DCCALDigiHit*> locCCALDigiHits;
-	locEventLoop->Get(locCCALDigiHits);
+	locEvent->Get(locCCALDigiHits);
 
         // BCAL LED Pseudo Trigger//
         vector<const DBCALHit*> locdbcalhits;
-        locEventLoop->Get(locdbcalhits);
+        locEvent->Get(locdbcalhits);
 
         vector<const DBCALPoint*> locdbcalpoints;
-        locEventLoop->Get(locdbcalpoints);
+        locEvent->Get(locdbcalpoints);
 
 	vector<const DFCALDigiHit*> locFCALDigiHits;
-	locEventLoop->Get(locFCALDigiHits);
+	locEvent->Get(locFCALDigiHits);
 
 	const DCODAEventInfo* locCODAEventInfo = NULL;
-	try {locEventLoop->GetSingle(locCODAEventInfo);}catch(...){}
+	try {locEvent->GetSingle(locCODAEventInfo);}catch(...){}
 
 	const DEPICSvalue* locEPICSvalue = NULL;
-	try {locEventLoop->GetSingle(locEPICSvalue);}catch(...){}
+	try {locEvent->GetSingle(locEPICSvalue);}catch(...){}
 
 	const DDetectorMatches* locDetectorMatches = NULL;
-	locEventLoop->GetSingle(locDetectorMatches);
+	locEvent->GetSingle(locDetectorMatches);
 
 	const DEventRFBunch* locEventRFBunch = NULL;
-	locEventLoop->GetSingle(locEventRFBunch);
+	locEvent->GetSingle(locEventRFBunch);
 
 	const DVertex* locVertex = NULL;
-	locEventLoop->GetSingle(locVertex);
+	locEvent->GetSingle(locVertex);
 
 	vector<const DL1Trigger*> locL1Triggers;
-	locEventLoop->Get(locL1Triggers);
+	locEvent->Get(locL1Triggers);
 	const DL1Trigger* locL1Trigger = locL1Triggers.empty() ? NULL : locL1Triggers[0];
 
 	vector<const DChargedTrack*> locChargedTracks;
-	locEventLoop->Get(locChargedTracks, "PreSelect");
+	locEvent->Get(locChargedTracks, "PreSelect");
+
+	std::vector<const DBeamHelicity*> locBeamHelicities;
+	locEvent->Get(locBeamHelicities);
 
 	// The following declares containers for all types in F1Types
 	// (defined at top of this file) and fills them.
 	#define GetVect(A) \
 		vector<const A*> v##A; \
-		locEventLoop->Get(v##A);
+		locEvent->Get(v##A);
 	#define GetTaggerVect(A) \
 		vector<const A*> v##A; \
-		locEventLoop->Get(v##A,"Calib");
+		locEvent->Get(v##A,"Calib");
 	F1Types(GetVect)		
 	F1TaggerTypes(GetTaggerVect)		
 
@@ -727,7 +741,7 @@ jerror_t JEventProcessor_highlevel_online::evnt(JEventLoop *locEventLoop, uint64
 
 
 	/*************************************************************** F1 TDC - fADC time ***************************************************************/
-	japp->RootFillLock(this); //ACQUIRE ROOT FILL LOCK
+	lockService->RootFillLock(this); //ACQUIRE ROOT FILL LOCK
 
 	// The following fills the dF1TDC_fADC_tdiff histo for
 	// all detectors that use F1TDC modules. See the templates
@@ -844,7 +858,7 @@ jerror_t JEventProcessor_highlevel_online::evnt(JEventLoop *locEventLoop, uint64
 
 	const DL1Trigger *trig = NULL;
 	try {
-		locEventLoop->GetSingle(trig);
+		locEvent->GetSingle(trig);
 	} catch (...) {}
 	if (trig) {
         	if (trig->fp_trig_mask & 0x100){//bit=9
@@ -875,8 +889,8 @@ jerror_t JEventProcessor_highlevel_online::evnt(JEventLoop *locEventLoop, uint64
        dHist_L1bits_fp_twelvehundhits->Fill(pseudo_triggerbit);
 	// DON'T DO HIGHER LEVEL PROCESSING FOR FRONT PANEL TRIGGER EVENTS, OR NON-TRIGGER EVENTS
     if(!locL1Trigger || (locL1Trigger && (locL1Trigger->fp_trig_mask>0))) {
-        japp->RootFillUnLock(this); //RELEASE ROOT FILL LOCK
-        return NOERROR;
+        lockService->RootFillUnLock(this); //RELEASE ROOT FILL LOCK
+        return;
     }
 
 	/****************************************************** NUM RECONSTRUCTED OBJECTS *****************************************************/
@@ -910,9 +924,22 @@ jerror_t JEventProcessor_highlevel_online::evnt(JEventLoop *locEventLoop, uint64
 		double locTheta = locChargedHypo->momentum().Theta()*180.0/TMath::Pi();
 		double locPhi = locChargedHypo->momentum().Phi()*180.0/TMath::Pi();
 		double locBeta = locChargedHypo->measuredBeta();
+
+		auto locBCALShowerMatchParams = locChargedHypo->Get_BCALShowerMatchParams();
+		//auto locFCALShowerMatchParams = locChargedHypo->Get_FCALShowerMatchParams();
+		auto locTOFHitMatchParams = locChargedHypo->Get_TOFHitMatchParams();
+		//auto locSCHitMatchParams = locChargedHypo->Get_SCHitMatchParams();
+
 		dHist_PVsTheta_Tracks->Fill(locTheta, locP);
 		dHist_PhiVsTheta_Tracks->Fill(locTheta, locPhi);
+		
 		dbeta_vs_p->Fill(locP, locBeta);
+		if(locTOFHitMatchParams != NULL) {
+			dbeta_vs_p_TOF->Fill(locP, locBeta);
+		}
+		if(locBCALShowerMatchParams != NULL) {
+			dbeta_vs_p_BCAL->Fill(locP, locBeta);
+		}
 	}
 	
 	/*************************************************************** VERTEX ***************************************************************/
@@ -1141,30 +1168,38 @@ jerror_t JEventProcessor_highlevel_online::evnt(JEventLoop *locEventLoop, uint64
 		}
 	}
 
+	/*************************************************************** Helicity ***************************************************************/
 
-	japp->RootFillUnLock(this); //RELEASE ROOT FILL LOCK
 
-	return NOERROR;
+	// Save helicity by trigger bit
+	for (size_t i=0; i < locBeamHelicities.size(); ++i)
+	  {
+	    for(int locTriggerBit = 1; locTriggerBit <= 32; ++locTriggerBit)
+	      {
+		if(locgtpTrigBits[locTriggerBit - 1])
+		  if (locBeamHelicities[i]->valid)
+		    dHist_heli_asym_gtp->Fill(locTriggerBit, locBeamHelicities[i]->helicity);
+	      }
+	  }
+
+	lockService->RootFillUnLock(this); //RELEASE ROOT FILL LOCK
 }
 
 //------------------
-// erun
+// EndRun
 //------------------
-jerror_t JEventProcessor_highlevel_online::erun(void)
+void JEventProcessor_highlevel_online::EndRun()
 {
   // This is called whenever the run number changes, before it is
   // changed to give you a chance to clean up before processing
   // events from the next run number.
-
-  return NOERROR;
 }
 
 //------------------
-// fini
+// Finish
 //------------------
-jerror_t JEventProcessor_highlevel_online::fini(void)
+void JEventProcessor_highlevel_online::Finish()
 {
   // Called before program exit after event processing is finished.
-  return NOERROR;
 }
 

@@ -11,9 +11,13 @@
 #include "TH1F.h"
 #include "TTree.h"
 
+#include <JANA/JFactoryT.h>
+//#include <JANA/JEvent.h>
 #include <JANA/JEventProcessor.h>
+#include <mutex>
 #include <DAQ/DBeamHelicity.h>
-
+#include <DAQ/DHelicityData.h>
+#include <DAQ/DCODAROCInfo.h>
 // 
 // Here are the helicity signals (eg. quartet pattern (+--+ or -++-))
 // Signals with a (U) get delivered to the Halls to go into the DAQ.
@@ -69,20 +73,20 @@ static const int32_t  HelPattern[6][32]  = {                                    
 
 
 
-class JEventProcessor_HELI_online:public jana::JEventProcessor{
+class JEventProcessor_HELI_online:public JEventProcessor{
  public:
   JEventProcessor_HELI_online();
   ~JEventProcessor_HELI_online();
-  const char* className(void){return "JEventProcessor_HELI_online";};
   int         getHelicity(){return fHelicity;};                         // The whole point of the exercise - to return helicity -1,+1, 0(unknown)
   enum eHelPat{PAIR,QUARTET,OCTET,TOGGLE,HEXOQUAD, OCTOQUAD};
 
  private:
-  jerror_t init(void);						        ///< Called once at program start.
-  jerror_t brun(jana::JEventLoop *eventLoop, int32_t runnumber);	///< Called everytime a new run number is detected.
-  jerror_t evnt(jana::JEventLoop *eventLoop, uint64_t eventnumber);	///< Called every event.
-  jerror_t erun(void);						        ///< Called everytime run number changes, provided brun has been called.
-  jerror_t fini(void);						        ///< Called after last event of last event source has been processed.
+  std::mutex m_mtx;
+  void Init() override;
+  void BeginRun(const std::shared_ptr<const JEvent>& event) override;
+  void Process(const std::shared_ptr<const JEvent>& event) override;
+  void EndRun() override;
+  void Finish() override;		        ///< Called after last event of last event source has been processed.
   int nextRand(uint32_t *bits);                                         // generate next bit pattern in the sequence, return result bit. 
   int readParms(int source);                                            // Read setup etc from database or file
   int setRunParms(int run);                                             // Set parms for specific run
@@ -96,6 +100,7 @@ class JEventProcessor_HELI_online:public jana::JEventProcessor{
   
   uint32_t  fRunNumber;                     //Current run number
   uint64_t  fEventno;                       //Number current event
+  uint64_t  fReferenceClockTime;            //Timestamp from  ROC
   uint64_t  fEventLatest;                   //Number of latest event (another thread may have done a future event).
   uint      fIsLatest;
   uint64_t  fEventRate;                     //To make an approximate count of the event rate.
