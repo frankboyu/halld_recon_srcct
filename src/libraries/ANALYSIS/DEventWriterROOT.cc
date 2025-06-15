@@ -195,6 +195,7 @@ void DEventWriterROOT::Create_DataTree(const DReaction* locReaction, JEventLoop*
 
 	//create branches for combos
 	locBranchRegister.Register_Single<UChar_t>("NumUnusedTracks");
+	locBranchRegister.Register_Single<UChar_t>("NumSCHits");
 	Create_Branches_Combo(locBranchRegister, locReaction, locIsMCDataFlag, locPositionToNameMap);
 
 	//Kinematic fit data (pulls and covariance matrices)
@@ -1393,6 +1394,12 @@ void DEventWriterROOT::Fill_DataTree(JEventLoop* locEventLoop, const DReaction* 
 	TVector3 locSumP3_UnusedTracks;
 	int locNumUnusedTracks = dAnalysisUtilities->Calc_Momentum_UnusedTracks(locEventLoop, locParticleCombos[0], locSumPMag_UnusedTracks, locSumP3_UnusedTracks);
 	locTreeFillData->Fill_Single<UChar_t>("NumUnusedTracks", locNumUnusedTracks);
+
+    //SC HITS
+    vector<const DSCHit*> locSCHits;
+    locEventLoop->Get(locSCHits);
+	locTreeFillData->Fill_Single<UChar_t>("NumSCHits", UInt_t(locSCHits.size()));
+    cout << "Number of SC Hits: " << UInt_t(locSCHits.size()) << endl;
 
 	//COMBOS
 	locTreeFillData->Fill_Single<UInt_t>("NumCombos", UInt_t(locParticleCombos.size()));
