@@ -90,6 +90,7 @@ class DEventWriterROOT : public JObject
 		unsigned int dInitNumComboArraySize;
 
 		double dTargetCenterZ;
+        vector<vector<DVector3>> m_sc_pos, m_sc_norm;
 
 		//DEFAULT ACTIONS LISTED SEPARATELY FROM CUSTOM (in case in derived class user does something bizarre)
 		map<const DReaction*, DCutAction_ThrownTopology*> dCutActionMap_ThrownTopology;

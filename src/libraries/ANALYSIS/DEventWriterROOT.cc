@@ -54,6 +54,7 @@ void DEventWriterROOT::Initialize(JEventLoop* locEventLoop)
 	DGeometry* locGeometry = locApplication->GetDGeometry(locEventLoop->GetJEvent().GetRunNumber());
 	dTargetCenterZ = 65.0;
 	locGeometry->GetTargetZ(dTargetCenterZ);
+    locGeometry->GetStartCounterGeom(m_sc_pos, m_sc_norm);
 
 	//CREATE TTREES
 	for(auto& locVertexInfo : locVertexInfos)
@@ -77,6 +78,7 @@ void DEventWriterROOT::Run_Update(JEventLoop* locEventLoop)
 	DGeometry* locGeometry = locApplication->GetDGeometry(locEventLoop->GetJEvent().GetRunNumber());
 	dTargetCenterZ = 65.0;
 	locGeometry->GetTargetZ(dTargetCenterZ);
+    locGeometry->GetStartCounterGeom(m_sc_pos, m_sc_norm);
 
 	// update run-dependent info/objects
 	for(auto& locMapPair : dCutActionMap_ThrownTopology)
@@ -175,6 +177,14 @@ void DEventWriterROOT::Create_DataTree(const DReaction* locReaction, JEventLoop*
 	locBranchRegister.Register_Single<Double_t>("L1BCALEnergy");
 	locBranchRegister.Register_Single<Double_t>("L1FCALEnergy");
 
+    //Create branches for SC hits
+    locBranchRegister.Register_Single<Int_t>("NumSCHits");
+    locBranchRegister.Register_FundamentalArray<Int_t>("sc_sector","NumSCHits");
+    locBranchRegister.Register_FundamentalArray<Double_t>("sc_phi","NumSCHits");
+    locBranchRegister.Register_FundamentalArray<Double_t>("sc_dE","NumSCHits");
+    locBranchRegister.Register_FundamentalArray<Double_t>("sc_t","NumSCHits");
+    locBranchRegister.Register_FundamentalArray<Double_t>("sc_pulse_height","NumSCHits");
+
 	//create X4_Production
 	locBranchRegister.Register_Single<TLorentzVector>("X4_Production");
 
@@ -195,7 +205,6 @@ void DEventWriterROOT::Create_DataTree(const DReaction* locReaction, JEventLoop*
 
 	//create branches for combos
 	locBranchRegister.Register_Single<UChar_t>("NumUnusedTracks");
-	locBranchRegister.Register_Single<UChar_t>("NumSCHits");
 	Create_Branches_Combo(locBranchRegister, locReaction, locIsMCDataFlag, locPositionToNameMap);
 
 	//Kinematic fit data (pulls and covariance matrices)
@@ -1397,9 +1406,21 @@ void DEventWriterROOT::Fill_DataTree(JEventLoop* locEventLoop, const DReaction* 
 
     //SC HITS
     vector<const DSCHit*> locSCHits;
+    size_t n_sc_hits = 0;
     locEventLoop->Get(locSCHits);
-	locTreeFillData->Fill_Single<UChar_t>("NumSCHits", UInt_t(locSCHits.size()));
-    cout << "Number of SC Hits: " << UInt_t(locSCHits.size()) << endl;
+    for(vector<const DSCHit*>::const_iterator sc = locSCHits.begin(); sc != locSCHits.end(); sc++)
+    {
+		int sector = (*sc)->sector;
+		double phi = m_sc_pos[sector-1][0].Phi() * (180./TMath::Pi());
+		locTreeFillData->Fill_Array<Int_t>("sc_sector",          sector,              n_sc_hits);
+		locTreeFillData->Fill_Array<Double_t>("sc_phi",          phi,                 n_sc_hits);
+		locTreeFillData->Fill_Array<Double_t>("sc_dE",           (*sc)->dE,           n_sc_hits);
+		locTreeFillData->Fill_Array<Double_t>("sc_t",            (*sc)->t,            n_sc_hits);
+		locTreeFillData->Fill_Array<Double_t>("sc_pulse_height", (*sc)->pulse_height, n_sc_hits);
+        n_sc_hits++;
+	}
+    locTreeFillData->Fill_Single<Int_t>("NumSCHits", n_sc_hits);
+    cout << "Number of SC Hits: " << n_sc_hits << endl;
 
 	//COMBOS
 	locTreeFillData->Fill_Single<UInt_t>("NumCombos", UInt_t(locParticleCombos.size()));
